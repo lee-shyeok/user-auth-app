@@ -1,12 +1,13 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from database.db import engine, get_db, Base
-from user.models import User
+from user.models import User, HealthProfile
 from auth.jwt import verify_password, get_password_hash, create_access_token, decode_token
+from prediction.model import predict_health_risk
 
 load_dotenv()
 app = FastAPI()
@@ -16,6 +17,12 @@ class UserCreate(BaseModel):
     username: str
     email: str
     password: str
+
+class HealthInput(BaseModel):
+    age: int
+    bmi: float
+    blood_pressure: int
+    cholesterol: int
 
 @app.on_event("startup")
 async def startup():
@@ -49,3 +56,23 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = 
 async def me(token: str = Depends(oauth2_scheme)):
     payload = decode_token(token)
     return {"username": payload.get("sub")}
+
+@app.post("/health/predict")
+async def predict(data: HealthInput, token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)):
+    payload = decode_token(token)
+    username = payload.get("sub")
+    result = await db.execute(select(User).where(User.username == username))
+    user = result.scalar()
+
+    profile = HealthProfile(
+        user_id=user.id,
+        age=data.age,
+        bmi=data.bmi,
+        blood_pressure=data.blood_pressure,
+        cholesterol=data.cholesterol
+    )
+    db.add(profile)
+    await db.commit()
+
+    prediction = predict_health_risk(data.age, data.bmi, data.blood_pressure, data.cholesterol)
+    return {"username": username, **prediction}
